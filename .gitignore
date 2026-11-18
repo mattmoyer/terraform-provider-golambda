@@ -1,0 +1,8 @@
+/dist/
+/terraform-provider-golambda
+/.docs-schema/
+/docs.tar.gz
+*.tfstate*
+.terraform/
+.terraform.lock.hcl
+gpg_key.asc

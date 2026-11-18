@@ -1,0 +1,57 @@
+name: release
+
+# Push a tag like v0.1.0 to build, sign and publish a provider version to the
+# Spacelift private registry. Required repository settings:
+#   secrets GPG_PRIVATE_KEY, GPG_PASSPHRASE: the key registered with
+#     `spacectl provider add-gpg-key`
+#   secrets SPACELIFT_API_KEY_ID, SPACELIFT_API_KEY_SECRET: an admin API key
+#   variable SPACELIFT_API_KEY_ENDPOINT: e.g. https://moyer.app.us.spacelift.io
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      SPACELIFT_API_KEY_ENDPOINT: ${{ vars.SPACELIFT_API_KEY_ENDPOINT }}
+      SPACELIFT_API_KEY_ID: ${{ secrets.SPACELIFT_API_KEY_ID }}
+      SPACELIFT_API_KEY_SECRET: ${{ secrets.SPACELIFT_API_KEY_SECRET }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: opentofu/setup-opentofu@v1
+        with:
+          tofu_wrapper: false
+      - id: gpg
+        uses: crazy-max/ghaction-import-gpg@v6
+        with:
+          gpg_private_key: ${{ secrets.GPG_PRIVATE_KEY }}
+          passphrase: ${{ secrets.GPG_PASSPHRASE }}
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          # Consider pinning an exact version: a goreleaser upgrade has broken
+          # Spacelift provider signatures before.
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GPG_FINGERPRINT: ${{ steps.gpg.outputs.fingerprint }}
+      - uses: spacelift-io/setup-spacectl@main
+      - name: Publish to Spacelift
+        run: |
+          set -euo pipefail
+          version_id=$(spacectl provider create-version --type golambda --protocols 6.0 --quiet)
+          make docs
+          tar -czf docs.tar.gz -C docs .
+          spacectl provider upload-docs --version "$version_id" --docs-archive docs.tar.gz
+          spacectl provider publish-version --version "$version_id"
