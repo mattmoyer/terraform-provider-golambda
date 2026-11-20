@@ -1,0 +1,5 @@
+/terraform-provider-golambda
+/.docs-schema/
+*.tfstate*
+.terraform/
+.terraform.lock.hcl
