@@ -338,7 +338,7 @@ func TestAccZipArchiveLocalPlanFailures(t *testing.T) {
 			{
 				Config:      localConfig(cache, src+"/missing"),
 				PlanOnly:    true,
-				ExpectError: regexp.MustCompile(`no such file`),
+				ExpectError: regexp.MustCompile(`no\s+such\s+file`),
 			},
 			{
 				Config: fmt.Sprintf(`
@@ -353,6 +353,45 @@ resource "golambda_zip_archive" "test" {
 `, cache, helloA, src),
 				PlanOnly:    true,
 				ExpectError: regexp.MustCompile(`(?s)Invalid Attribute Combination`),
+			},
+		},
+	})
+}
+
+// Deleting a resource and its source_dir together must plan a clean destroy,
+// even on a worker without the archive on disk.
+func TestAccZipArchiveLocalOrphanDestroy(t *testing.T) {
+	cache, src := t.TempDir(), t.TempDir()
+	writeLocalModule(t, src, localMainA)
+	dir := src + "/cmd/handler"
+	removeSource := func() {
+		removeOutputs(t, cache)
+		if err := os.RemoveAll(src + "/cmd"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testProviders,
+		Steps: []resource.TestStep{
+			{
+				Config: localConfig(cache, dir),
+			},
+			{
+				// Still in configuration: refresh only warns, and the plan
+				// reports the missing directory without the GITHUB_TOKEN hint.
+				PreConfig:   removeSource,
+				Config:      localConfig(cache, dir),
+				PlanOnly:    true,
+				ExpectError: regexp.MustCompile(`(?s)Invalid source_dir.*no\s+such\s+file`),
+			},
+			{
+				PreConfig: removeSource,
+				Config:    fmt.Sprintf("provider \"golambda\" {\n  cache_dir = %q\n}\n", cache),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						plancheck.ExpectResourceAction(addr, plancheck.ResourceActionDestroy),
+					},
+				},
 			},
 		},
 	})

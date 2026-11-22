@@ -252,7 +252,10 @@ func (r *zipArchiveResource) buildForApply(ctx context.Context, plan *zipArchive
 }
 
 // Read restores the archive file if it's missing (for example on a fresh
-// worker), so dependents that read output_path find it.
+// worker), so dependents that read output_path find it. A failed rebuild
+// doesn't fail the refresh: an orphaned resource whose source is gone must
+// still be destroyable, and for a resource still in configuration ModifyPlan
+// rebuilds and reports the error.
 func (r *zipArchiveResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
 	var state zipArchiveModel
 	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
@@ -271,10 +274,15 @@ func (r *zipArchiveResource) Read(ctx context.Context, req resource.ReadRequest,
 		rebuild.OutputPath = types.StringUnknown()
 	}
 	art, diags := r.produce(ctx, rebuild)
-	resp.Diagnostics.Append(diags...)
-	if resp.Diagnostics.HasError() {
+	if diags.HasError() {
+		for _, d := range diags {
+			resp.Diagnostics.AddWarning("Could not restore archive: "+d.Summary(),
+				fmt.Sprintf("Rebuilding the missing archive at %s failed, so state is left unchanged and dependents that read output_path may not find the file.\n\n%s",
+					path, d.Detail()))
+		}
 		return
 	}
+	resp.Diagnostics.Append(diags...)
 	if state.isLocal() && art.sha256 != state.OutputSHA256.ValueString() {
 		// The local source changed since the last apply. Leave state alone so
 		// the plan shows the new archive as a change to this resource.
@@ -318,6 +326,15 @@ func (r *zipArchiveResource) produce(ctx context.Context, m zipArchiveModel) (ar
 	// module's path, whose private dependencies are often from the same owner.
 	var pkg string
 	if m.isLocal() {
+		// Check before downloading a toolchain, and so a missing directory
+		// isn't reported with the private-repository hint below.
+		if fi, err := os.Stat(sourceDir); err != nil {
+			diags.AddAttributeError(pathSourceDir, "Invalid source_dir", err.Error())
+			return artifact{}, diags
+		} else if !fi.IsDir() {
+			diags.AddAttributeError(pathSourceDir, "Invalid source_dir", sourceDir+" is not a directory")
+			return artifact{}, diags
+		}
 		pkg = build.LocalModulePath(sourceDir)
 	} else {
 		p, _, err := build.ParseTarget(target)
@@ -476,4 +493,7 @@ func (v goVersionValidator) ValidateString(ctx context.Context, req validator.St
 	}
 }
 
-var pathTarget = path.Root("target")
+var (
+	pathTarget    = path.Root("target")
+	pathSourceDir = path.Root("source_dir")
+)
